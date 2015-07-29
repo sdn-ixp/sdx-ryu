@@ -31,10 +31,16 @@ OUTBOUND_TABLE = 1
 INBOUND_TABLE = 2
 ARP_BGP_TABLE = 3
 
-# PRIORITIES
+# PRIORITIES (Values can be in [0,65535], 0 is miss)
 FLOW_MISS_PRIORITY = 0
-PARTICIPANT_TAGGING_PRIORITY = 1
-ARP_BGP_PRIORITY = 2
+
+# main table priorities
+DEFAULT_FORWARDING_PRIORITY = 1
+OUTBOUND_NEEDED_PRIORITY = 2
+INBOUND_NEEDED_PRIORITY = 3
+
+PARTICIPANT_TAGGING_PRIORITY = 2
+ARP_BGP_PRIORITY = 3
 
 BEST_PATH_PRIORITY = 1
 OUTBOUND_POLICY_PRIORITY = 2
@@ -54,6 +60,9 @@ OUTBOUND_POLICY_COOKIE = 2
 
 DEFAULT_INBOUND_COOKIE = 3
 INBOUND_POLICY_COOKIE = 4
+
+DEFAULT_WITH_INBOUND_COOKIE = 5
+DEFAULT_WO_INBOUND_COOKIE = 6
 
 class aSDX(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -149,6 +158,7 @@ class aSDX(app_manager.RyuApp):
         if LOG:
             self.logger.info("INIT: Participant Tagging")
         
+        """
         # set up participant tagging
         for participant_name in self.sdx.participants:
             participant = self.sdx.participants[participant_name]
@@ -157,13 +167,88 @@ class aSDX(app_manager.RyuApp):
                 instructions = [parser.OFPInstructionWriteMetadata(participant_name, self.metadata_mask),
                                 parser.OFPInstructionGotoTable(OUTBOUND_TABLE)]
                 
-                self.add_flow(datapath, NO_COOKIE, MAIN_TABLE, PARTICIPANT_TAGGING_PRIORITY, match, None, instructions)        
+                self.add_flow(datapath, NO_COOKIE, MAIN_TABLE, PARTICIPANT_TAGGING_PRIORITY, match, None, instructions)
+        """       
+
+        if LOG:
+            self.logger.info("INIT: Install traffic bouncing")
+
+        # bounce all new traffic to outbound switch
+        # also overwrites the source mac to always be the participant's port 0 mac (tagging without metadata)
+        for participant_name in self.sdx.participants:
+            participant = self.sdx.participants[participant_name]
+            port0_mac = participant["ports"][0]["MAC"]
+            for port in participant["ports"]:              
+                match = parser.OFPMatch(in_port=port["ID"])
+                instructions = [parser.OFPActionSetField(eth_src=port0_mac),
+                                parser.OFPInstructionGotoTable(OUTBOUND_TABLE)]
+                
+                self.add_flow(datapath, NO_COOKIE, MAIN_TABLE, PARTICIPANT_TAGGING_PRIORITY, match, None, instructions)
+
 
         if LOG:
             self.logger.info("INIT: Install default best routes")
-                
+
+
+        # default forwarding rules in main switch
+        for participant_name in self.sdx.participants:
+            participant = self.sdx.participants[participant_name]
+            # traffic that hit inbound policies will have stage-2 vmacs (port num and participant ID)
+            if ('inbound' in participant["policies"]):  
+                for port in participant["ports"]:   
+                    port_num = participant["ports"].index(port)
+
+                    # number of bits to represent both a port and participant
+                    part_port_size = self.sdx.port_size + self.sdx.best_path_size
+                    vmac_bitmask = vmac_best_path_match(2**part_port_size-1, self.sdx)
+                    vmac = vmac_part_port_match(participant_name, port_num, self.sdx)
+
+                    match = parser.OFPMatch(eth_dst = (vmac, vmac_bitmask))
+
+                    dst_mac = participant["ports"][port_num]["MAC"]
+                    out_port = participant["ports"][port_num]["ID"]
+
+                    # output the packet to the participant
+                    actions = [parser.OFPActionSetField(eth_dst=dst_mac), 
+                               parser.OFPActionOutput(out_port)]
+                    
+                    self.add_flow(datapath, DEFAULT_WITH_INBOUND_COOKIE, MAIN_TABLE, DEFAULT_FORWARDING_PRIORITY, match, actions)
+
+            # if the destination participant had no inbound, then we don't match on port bits
+            else:
+                vmac_bitmask = vmac_best_path_match(2**self.sdx.best_path_size-1, self.sdx)
+                vmac = vmac_best_path_match(participant_name, self.sdx)
+
+                match = parser.OFPMatch(eth_dst=(vmac, vmac_bitmask))
+
+                # we send to the first port by default for participants with no inbound policy
+                dst_mac = participant["ports"][0]["MAC"]
+                out_port = participant["ports"][0]["ID"]
+
+                # output the packet to the participant
+                actions = [parser.OFPActionSetField(eth_dst=dst_mac), 
+                           parser.OFPActionOutput(out_port)]
+
+                self.add_flow(datapath, DEFAULT_WO_INBOUND_COOKIE, MAIN_TABLE, DEFAULT_FORWARDING_PRIORITY, match, actions)
+
+
+
+        if LOG:
+            self.logger.info("INIT: Install outbound and inbound miss rules")
+        
         # outbound - flow rules - flow table 1
         ## install default best routes
+        match = parser.OFPMatch()
+        actions = [parser.OFPInstructionGotoTable(INBOUND_TABLE)]
+        self.add_flow(datapath, NO_COOKIE, OUTBOUND_TABLE, FLOW_MISS_PRIORITY, match, actions)
+
+
+        match = parser.OFPMatch()
+        actions = [parser.OFPInstructionGotoTable(MAIN_TABLE)]
+        self.add_flow(datapath, NO_COOKIE, INBOUND_TABLE, FLOW_MISS_PRIORITY, match, actions)
+
+
+        """
         for participant_name in self.sdx.participants:
             vmac_bitmask = vmac_best_path_match(2**self.sdx.best_path_size-1, self.sdx)
             vmac = vmac_best_path_match(participant_name, self.sdx)
@@ -174,6 +259,8 @@ class aSDX(app_manager.RyuApp):
                             parser.OFPInstructionGotoTable(INBOUND_TABLE)]
             
             self.add_flow(datapath, BEST_PATH_COOKIE, OUTBOUND_TABLE, BEST_PATH_PRIORITY, match, None, instructions)
+        """
+
 
         if LOG:
             self.logger.info("INIT: Install inbound flow rules")
@@ -185,8 +272,14 @@ class aSDX(app_manager.RyuApp):
             if ('inbound' in participant["policies"]):
                 policies = participant["policies"]["inbound"] 
                 for policy in policies:
+                    # match on the next-hop
+                    vmac_bitmask = vmac_best_path_match(2**self.sdx.best_path_size-1, self.sdx)
+                    vmac = vmac_best_path_match(participant_name, self.sdx)
+
+
                     match_args = policy["match"]
-                    match_args["metadata"] = participant_name
+                    ####match_args["metadata"] = participant_name
+                    match_args["eth_dst"] = (vmac, vmac_bitmask)
                     match = parser.OFPMatch(**match_args) 
                     
                     if (policy["action"]["fwd"] < len(participant["ports"])):

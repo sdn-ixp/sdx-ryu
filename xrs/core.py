@@ -34,6 +34,7 @@ class XRS():
         
         self.max_superset_size = 30
         self.best_path_size = 12
+        self.port_size = 6
         
         self.VMAC_size = 48
         
