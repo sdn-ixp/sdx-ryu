@@ -22,6 +22,7 @@ def get_all_as_paths(prefix, participants):
             
     return as_sets
     
+# TODO: maintain some state for prefix2part so that the ribs do not have to be re-parsed each time
 def get_all_participant_sets(xrs):
     participant_sets = []
      

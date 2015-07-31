@@ -38,16 +38,16 @@ FLOW_MISS_PRIORITY = 0
 
 # main switch priorities
 ARP_BGP_PRIORITY = 4
-OUTBOUND_NEEDED_PRIORITY = 3
+OUTBOUND_BOUNCE_PRIORITY = 3
 DEFAULT_FORWARDING_PRIORITY = 2
-INBOUND_NEEDED_PRIORITY = 1
+INBOUND_BOUNCE_PRIORITY = 1
 
 # outbound switch priorities
-OUTBOUND_POLICY_PRIORITY = 1
+OUTBOUND_HIT_PRIORITY = 1
 
 # inbound switch priorities
-INBOUND_PRIORITY = 2
-INBOUND_DEFAULT_PRIORITY = 1
+INBOUND_HIT_PRIORITY = 2
+INBOUND_MISS_PRIORITY = 1
 
 # bgp table priority
 GRATUITOUS_ARP_PRIORITY = 3
@@ -99,7 +99,7 @@ def init_main_rules(self, ev):
 				actions = [parser.OFPActionSetField(eth_src=port0_mac)]
                 instructions = [parser.OFPInstructionGotoTable(OUTBOUND_TABLE)]
 
-            	self.add_flow(datapath, OUTBOUND_REQUIRED_COOKIE, MAIN_TABLE, OUTBOUND_NEEDED_PRIORITY, match, actions, instructions)
+            	self.add_flow(datapath, OUTBOUND_REQUIRED_COOKIE, MAIN_TABLE, OUTBOUND_BOUNCE_PRIORITY, match, actions, instructions)
 
 
 
@@ -113,7 +113,7 @@ def init_main_rules(self, ev):
 
     instructions = [parser.OFPInstructionGotoTable(INBOUND_TABLE)]
 
-    self.add_flow(datapath, INBOUND_REQUIRED_COOKIE, MAIN_TABLE, INBOUND_NEEDED_PRIORITY, match, None, instructions)
+    self.add_flow(datapath, INBOUND_REQUIRED_COOKIE, MAIN_TABLE, INBOUND_BOUNCE_PRIORITY, match, None, instructions)
 
 
     if LOG:
@@ -198,7 +198,7 @@ def init_inbound_rules(self, ev):
                 match = parser.OFPMatch(**match_args) 
 
                 port_num = policy["action"]["fwd"]
-                if port_num < len(participant["ports"]):
+                if port_num >= len(participant["ports"]):
                 	port_num = 0
 
 
@@ -208,7 +208,7 @@ def init_inbound_rules(self, ev):
                 actions = [parser.OFPActionSetField(eth_dst=new_vmac)]
                 instructions = [parser.OFPInstructionGotoTable(MAIN_TABLE)]
                 
-                self.add_flow(datapath, INBOUND_POLICY_COOKIE, INBOUND_TABLE, INBOUND_PRIORITY, match, actions, instructions)
+                self.add_flow(datapath, INBOUND_POLICY_COOKIE, INBOUND_TABLE, INBOUND_HIT_PRIORITY, match, actions, instructions)
             # end for
 
 	        # if participant had inbound policies, we must also install default inbound policies
@@ -226,7 +226,7 @@ def init_inbound_rules(self, ev):
 	        actions = [parser.OFPActionSetField(eth_dst=new_vmac)]
 	        instructions = [parser.OFPInstructionGotoTable(MAIN_TABLE)]
 	            
-	        self.add_flow(datapath, DEFAULT_INBOUND_COOKIE, INBOUND_TABLE, INBOUND_DEFAULT_PRIORITY, match, actions, instructions)
+	        self.add_flow(datapath, DEFAULT_INBOUND_COOKIE, INBOUND_TABLE, INBOUND_MISS_PRIORITY, match, actions, instructions)
         # end if
     # end for
 
