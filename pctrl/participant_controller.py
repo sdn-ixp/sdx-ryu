@@ -176,10 +176,6 @@ class ParticipantController():
         self.refmon_client = None
         self.arp_client = None
 
-        # TODO: Think of better way of terminating this listener
-        self.listener_eh.close()
-
-
     def start_eh(self):
         '''Socket listener for network events '''
         if LOG: print self.idp, "Event Handler started."
