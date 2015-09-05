@@ -175,6 +175,7 @@ class ParticipantController():
             if LOG: print self.idp, "Event received of type", data.keys()
 
             # Starting a thread for independently processing each incoming network event
+            # TODO: Make this multi-process to leverage multiple cores
             event_processor_thread = Thread(target = self.process_event, args = [data])
             event_processor_thread.daemon = True
             event_processor_thread.start()
@@ -290,7 +291,6 @@ class ParticipantController():
 
             if LOG: print self.idp, "SS Changes:", ss_changes
 
-
             "If a recomputation event was needed, wipe out the flow rules."
             if ss_changes["type"] == "new":
                 wipe_msgs = msg_clear_all_outbound(self.policies, self.port0_mac)
@@ -307,7 +307,6 @@ class ParticipantController():
             "Map the superset changes to a list of new flow rules."
             flow_msgs = update_outbound_rules(ss_changes, self.policies,
                                               self.supersets, self.port0_mac)
-
 
             if LOG: print "Flow msg:", flow_msgs
             "Dump the new rules into the dataplane queue."
@@ -338,7 +337,6 @@ class ParticipantController():
 
         # Tell Route Server that it needs to announce these routes
         for announcement in announcements:
-            # TODO: Complete the logic for this function
             self.send_announcement(announcement)
 
         return reply
