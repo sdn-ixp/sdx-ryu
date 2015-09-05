@@ -10,6 +10,7 @@ from vmac_lib import VMACBuilder
 # Priorities
 BGP_PRIORITY = 6
 ARP_PRIORITY = 6
+VNH_ARP_PRIORITY = 5
 ARP_BROADCAST_PRIORITY = 5
 OUTBOUND_PRIORITY = 4
 FORWARDING_PRIORITY = 4
@@ -77,7 +78,7 @@ class GSS(object):
         port = self.config.arp_proxy.ports[0]
         match = {"eth_type": ETH_TYPE_ARP, "arp_tpa": (str(self.config.vnhs.network), str(self.config.vnhs.netmask))}
         action = {"fwd": [port.id]}
-        self.fm_builder.add_flow_mod("insert", rule_type, ARP_PRIORITY, match, action)
+        self.fm_builder.add_flow_mod("insert", rule_type, VNH_ARP_PRIORITY, match, action)
 
         ### direct all ARP requests for the route server to it
         port = self.config.route_server.ports[0]
@@ -166,7 +167,7 @@ class GSS(object):
     def handle_inbound(self, rule_type):
         vmac = self.vmac_builder.only_first_bit()
         match = {"eth_dst": (vmac, vmac)}
-        action = {"fwd": ["inbound"]}
+        action = {"fwd": ["outbound"]}
         self.fm_builder.add_flow_mod("insert", rule_type, INBOUND_BIT_PRIORITY, match, action)
 
     def match_any_fwd(self, rule_type, dst):

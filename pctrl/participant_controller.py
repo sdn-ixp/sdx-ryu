@@ -16,8 +16,15 @@ from peer import BGPPeer as BGPPeer
 from supersets import SuperSets
 from ss_rule_scheme import *
 from lib import *
+from ss_lib import *
+
+import time
+
+sys.path.insert(0, '../xctrl/')
+from flowmodmsg import FlowModMsgBuilder
 
 LOG = True
+TIMING = True
 
 MULTISWITCH = 0
 MULTITABLE  = 1
@@ -33,6 +40,9 @@ class ParticipantController():
         self.id = id
         # print ID for logging
         self.idp = "P_" + str(self.id) + ":"
+
+        # used to signal termination
+        self.run = True
 
         # Initialize participant params
         self.cfg = PConfig(config_file, self.id)
@@ -58,11 +68,9 @@ class ParticipantController():
 
         # Superset related params
         if self.cfg.vmac_mode == SUPERSETS:
-            if LOG: print self.idp, "Initializing SuperSets class"
             self.supersets = SuperSets(self, config_file=config_file)
         else:
             # TODO: create similar class and variables for MDS
-            if LOG: print self.idp, "Initializing MDS class"
             self.mds = None
 
         # Keep track of flow rules pushed
@@ -124,7 +132,12 @@ class ParticipantController():
 
         if LOG: print self.idp, "Initializing inbound rules"
 
-        rule_msgs = init_inbound_rules(self.id, self.policies, self.supersets)
+        final_switch = "main-in"
+        if self.cfg.dp_mode == MULTITABLE:
+            final_switch = "main-out"
+
+        rule_msgs = init_inbound_rules(self.id, self.policies, 
+                                        self.supersets, final_switch)
 
         if "changes" in rule_msgs:
             self.dp_queued.extend(rule_msgs["changes"])
@@ -136,13 +149,12 @@ class ParticipantController():
         (2) Send the queued policies to reference monitor
         '''
 
-        if LOG: print self.idp, "Pushing current flow mod queue."
+        if LOG: print self.idp, "Pushing current flow mod queue:"
 
         # it is crucial that dp_queued is traversed chronologically
         for flowmod in self.dp_queued:
-            print "Flowmods to push 1:", flowmod
+            if LOG: print self.idp, "MOD:", flowmod
             self.fm_builder.add_flow_mod(**flowmod)
-            print "Flowmods to push 2:", flowmod
             self.dp_pushed.append(flowmod)
 
         self.dp_queued = []
@@ -153,52 +165,81 @@ class ParticipantController():
         "Stop the Participants' SDN Controller"
         if LOG: print self.idp, "Stopping Controller."
 
+        # Signal Termination and close blocking listener
+        self.run = False
+        conn = Client(self.cfg.get_eh_info(), authkey=None)
+        conn.send("terminate")
+        conn.close()
+
         # TODO: confirm that this isn't silly
         self.xrs_client = None
         self.refmon_client = None
         self.arp_client = None
 
-        # TODO: Think of better way of terminating this listener
-        self.listener_eh.close()
-
-
     def start_eh(self):
         '''Socket listener for network events '''
         if LOG: print self.idp, "Event Handler started."
-        while True:
+        while self.run:
             if LOG: print self.idp, "EH waiting for connection..."
             conn_eh = self.listener_eh.accept()
-            if LOG: print self.idp, "EH established connection..."
+
             tmp = conn_eh.recv()
-            data = json.loads(tmp)
 
-            if LOG: print self.idp, "Event received of type", data.keys()
+            if tmp != "terminate":
+                if LOG: print self.idp, "EH established connection..."
 
+<<<<<<< HEAD
             # Starting a thread for independently processing each incoming network event
             # TODO: Make this multi-process to leverage multiple cores
             event_processor_thread = Thread(target = self.process_event, args = [data])
             event_processor_thread.daemon = True
             event_processor_thread.start()
+=======
+                data = json.loads(tmp)
+>>>>>>> 9daaf775797e17cc570152adca92277cb0f0b2e3
 
-            # Send a message back to the sender.
-            reply = "Event Received"
-            conn_eh.send(reply)
+                if LOG: print self.idp, "Event received of type", data.keys()
+
+                # Starting a thread for independently processing each incoming network event
+                event_processor_thread = Thread(target = self.process_event, args = [data])
+                event_processor_thread.daemon = True
+                event_processor_thread.start()
+
+                # Send a message back to the sender.
+                reply = "Event Received"
+                conn_eh.send(reply)
             conn_eh.close()
-
 
     def process_event(self, data):
         "Locally process each incoming network event"
-        print "Data received: ", data
+
+
         if 'bgp' in data:
+            if LOG: print self.idp, "Event Received: BGP Update."
             route = data['bgp']
             # Process the incoming BGP updates from XRS
-            print "BGP Route received: ",route, type(route)
+            #print self.idp, "BGP Route received: ",route, type(route)
             self.process_bgp_route(route)
 
         elif 'policy' in data:
             # Process the event requesting change of participants' policies
+            if LOG: print self.idp, "Event Received: Policy change."
             change_info = data['policy']
-            '''
+            self.process_policy_changes(change_info)
+
+        elif 'arp' in data:
+            (requester_srcmac, requested_vnh) = tuple(data['arp'])
+            if LOG: print self.idp, "Event Received: ARP request for IP", requested_vnh
+            self.process_arp_request(requester_srcmac, requested_vnh)
+
+        else:
+            if LOG: print self.idp, "UNKNOWN EVENT TYPE RECEIVED:", data
+
+
+    def process_policy_changes(self, change_info):
+        "Process the changes in participants' policies"
+        # TODO: Implement the logic of dynamically changing participants' outbound and inbound policy
+        '''
             change_info =
             {
                 'removal_cookies' : [cookie1, ...], # Cookies of deleted policies
@@ -208,19 +249,7 @@ class ParticipantController():
                 }
 
             }
-            '''
-            self.process_policy_changes(change_info)
-
-        elif 'arp' in data:
-            requested_vnh = data['arp']
-            self.process_arp_request(requested_vnh)
-
-
-    def process_policy_changes(self, change_info):
-        "Process the changes in participants' policies"
-        # TODO: Implement the logic of dynamically changing participants' outbound and inbound policy
-
-
+        '''
         # remove flow rules for the old policies
         removal_msgs = []
 
@@ -249,27 +278,56 @@ class ParticipantController():
         return 0
 
 
-    def process_arp_request(self, vnh):
+
+
+    def process_arp_request(self, part_mac, vnh):
         vmac = ""
         if self.cfg.vmac_mode == SUPERSETS:
             vmac = self.supersets.get_vmac(self, vnh)
         else:
             vmac = "whoa" # MDS vmac goes here
 
-        # send an arp response to each of our routers
-        for port in self.cfg.ports:
-            part_ip = port["IP"]
-            part_mac = port["MAC"]
-            arp_fields = {"vnhip":vnh,
-                          "vmac":vmac,
-                          "dstip":part_ip,
-                          "dstmac":part_mac}
 
-            self.arp_client.send(json.dumps(arp_fields))
+
+        # if this is gratuitous, send a reply to the part's ID
+        if part_mac is None:
+            gratuitous = True
+            # set fields appropriately for gratuitous arps
+            eth_dst = vmac_next_hop_match(self.id, self.supersets, False)
+            tpa = vnh
+            tha = vmac
+
+
+        else: # if it wasn't gratuitous
+            gratuitous = False
+            # dig up the IP of the target participant
+            for port in self.cfg.ports:
+                if part_mac == port["MAC"]:
+                    part_ip = port["IP"]
+                    break
+            # set field appropriately for arp responses
+            eth_dst = part_mac
+            tpa = part_ip
+            tha = part_mac
+
+
+        arp_fields = {  'SPA':vnh,     'TPA':tpa, 
+                        'SHA':vmac,     'THA':tha, 
+                        'eth_src':vmac, 'eth_dst':eth_dst}
+
+        if LOG: 
+            if gratuitous:
+                print self.idp, "Sending Gratuitious ARP:", arp_fields
+            else:
+                print self.idp, "Sending ARP Response:", arp_fields
+
+        self.arp_client.send(json.dumps(arp_fields))
 
 
     def process_bgp_route(self, route):
         "Process each incoming BGP advertisement"
+        start = time.time()
+
         reply = ''
         # Map to update for each prefix in the route advertisement.
         updates = self.bgp_instance.update(route)
@@ -281,37 +339,64 @@ class ParticipantController():
             self.bgp_instance.decision_process_local(update)
             self.vnh_assignment(update)
 
+        if TIMING:
+            elapsed = time.time() - start
+            print self.idp, "Time taken for decision process:", elapsed
+            start = time.time()
+
+
         if self.cfg.vmac_mode == 0:
         ################## SUPERSET RESPONSE TO BGP ##################
             # update supersets
             "Map the set of BGP updates to a list of superset expansions."
             ss_changes, ss_changed_prefs = self.supersets.update_supersets(self, updates)
+
+            if TIMING:
+                elapsed = time.time() - start
+                print self.idp, "Time taken to update supersets:", elapsed
+                start = time.time()
+
+
+
             # ss_changed_prefs are prefixes for which the VMAC bits have changed
             # these prefixes must have gratuitous arps sent
-
-            if LOG: print self.idp, "SS Changes:", ss_changes
+            garp_required_vnhs = [self.prefix_2_VNH[prefix] for prefix in ss_changed_prefs]
 
             "If a recomputation event was needed, wipe out the flow rules."
             if ss_changes["type"] == "new":
+                if LOG: print self.idp, "Wiping outbound rules."
                 wipe_msgs = msg_clear_all_outbound(self.policies, self.port0_mac)
                 self.dp_queued.extend(wipe_msgs)
 
                 #if a recomputation was needed, all VMACs must be reARPed
                 # TODO: confirm reARPed is a word
                 garp_required_vnhs = self.VNH_2_prefix.keys()
-            else:
-                # if recomputation wasn't needed, only garp next-hops with changed VMACs
-                garp_required_vnhs = [self.prefix_2_VNH[prefix] for prefix in ss_changed_prefs]
 
+            if len(ss_changes['changes']) > 0:
 
-            "Map the superset changes to a list of new flow rules."
-            flow_msgs = update_outbound_rules(ss_changes, self.policies,
-                                              self.supersets, self.port0_mac)
+                print self.idp, "Supersets have changed:", ss_changes
 
+                "Map the superset changes to a list of new flow rules."
+                flow_msgs = update_outbound_rules(ss_changes, self.policies,
+                                                  self.supersets, self.port0_mac)
+
+<<<<<<< HEAD
             if LOG: print "Flow msg:", flow_msgs
             "Dump the new rules into the dataplane queue."
             self.dp_queued.extend(flow_msgs)
             self.push_dp()
+=======
+
+                if LOG: print self.idp, "Flow msgs:", flow_msgs
+                "Dump the new rules into the dataplane queue."
+                self.dp_queued.extend(flow_msgs)
+
+
+            if TIMING:
+                elapsed = time.time() - start
+                print self.idp, "Time taken to deal with ss_changes:", elapsed
+                start = time.time()
+>>>>>>> 9daaf775797e17cc570152adca92277cb0f0b2e3
 
 
         ################## END SUPERSET RESPONSE ##################
@@ -321,8 +406,17 @@ class ParticipantController():
             if LOG: print self.idp, "Creating ctrlr messages for MDS scheme"
 
 
+        self.push_dp()
+
+
+        if TIMING:
+            elapsed = time.time() - start
+            print self.idp, "Time taken to push dp msgs:", elapsed
+            start = time.time()
+
+
         changed_vnhs, announcements = self.bgp_instance.bgp_update_peers(updates,
-                                        self.prefix_2_VNH, self.cfg.ports)
+                                        self.prefix_2_VNH, self.cfg.ports, self.idp)
 
         """ Combine the VNHs which have changed BGP default routes with the
             VNHs which have changed supersets.
@@ -332,14 +426,21 @@ class ParticipantController():
 
         # Send gratuitous ARP responses for all them
         for vnh in changed_vnhs:
-            self.process_arp_request(vnh)
-
+            self.process_arp_request(None, vnh)
 
         # Tell Route Server that it needs to announce these routes
         for announcement in announcements:
             self.send_announcement(announcement)
 
+
+        if TIMING:
+            elapsed = time.time() - start
+            print self.idp, "Time taken to send garps/announcements:", elapsed
+            start = time.time()
+
+
         return reply
+
 
 
     def send_announcement(self, announcement):
@@ -380,7 +481,7 @@ if __name__ == '__main__':
     # locate config file
     # TODO: Separate the config files for each participant
     base_path = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)),
-                                "..","examples",args.dir,"controller","sdx_config"))
+                                "..","examples",args.dir,"config"))
     config_file = os.path.join(base_path, "sdx_global.cfg")
 
     # locate the participant's policy file as well
@@ -391,7 +492,7 @@ if __name__ == '__main__':
 
 
     policy_path = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)),
-                            "..","examples",args.dir,"controller","participant_policies"))
+                            "..","examples",args.dir,"policies"))
 
     policy_file = os.path.join(policy_path, policy_filename)
 
