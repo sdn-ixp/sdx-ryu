@@ -30,50 +30,7 @@ class BGPPeer():
         self.peers_in = peers_in
         # peers that the participant can send its traffic to and gets advertisements from
         self.peers_out = peers_out
-<<<<<<< HEAD
-        
-=======
 
-    def decision_process_local(self, update):
-        'Update the local rib with new best path'
-        if ('announce' in update):
-            announce_route = update['announce']
-
-            # TODO: Make sure this logic is sane.
-            '''Goal here is to get all the routes in participant's input
-            rib for this prefix. '''
-            routes = []
-            routes.extend(self.get_routes('input',announce_route['prefix']))
-
-            if routes:
-                best_route = best_path_selection(routes)
-                # TODO: can be optimized? check to see if current route == best_route?
-                prefix = best_route['prefix']
-                self.delete_route("local",announce_route['prefix'])
-                self.add_route("local", prefix, best_route)
-
-            else:
-                print "## This should not happen"
-
-        elif('withdraw' in update):
-            deleted_route = update['withdraw']
-
-            if (deleted_route is not None):
-
-                # delete route if being used
-                if (self.get_routes('local',deleted_route['prefix'])):
-                    self.delete_route("local",deleted_route['prefix'])
-
-                    # TODO: Make sure this logic is sane.
-                    '''Goal here is to get all the routes in participant's input
-                    rib for this prefix. '''
-                    routes = []
-                    routes.extend(self.get_routes('input',deleted_route['prefix']))
-
-                    if routes:
-                        best_route = best_path_selection(routes)
-                        participants[participant_name].add_route("local",best_route['prefix'],best_route)
->>>>>>> 9daaf775797e17cc570152adca92277cb0f0b2e3
 
     def update(self,route):
         updates = []
@@ -123,21 +80,12 @@ class BGPPeer():
                 if ('ipv4 unicast' in announce):
                     for next_hop in announce['ipv4 unicast'].keys():
                         for prefix in announce['ipv4 unicast'][next_hop].keys():
-<<<<<<< HEAD
                             print "::::PREFIX:::::", prefix, type(prefix)
                             # TODO: Check if this appending the accounced route to the input rib?
                             # Why not use the `add_route` function?
                             atrributes = (neighbor, next_hop, origin, as_path,
                                          communities, med, atomic_aggregate)
                             self.rib["input"].add(prefix, atrributes)
-=======
-                            self.rib["input"][prefix] = (next_hop,
-                                                         origin,
-                                                         as_path,
-                                                         communities,
-                                                         med,
-                                                         atomic_aggregate)
->>>>>>> 9daaf775797e17cc570152adca92277cb0f0b2e3
                             self.rib["input"].commit()
                             # TODO: Avoid multiple interactions with the DB
                             announce_route = self.rib["input"].get_prefix_neighbor(prefix, neighbor)
@@ -225,7 +173,7 @@ class BGPPeer():
                     if LOG: print " Peer Object for: ", self.id, "--- This is weird. How can we not have any delete object in this function"
 
 
-    def bgp_update_peers(self, updates, prefix_2_VNH, ports, idp = 'P_U:'):
+    def bgp_update_peers(self, updates, prefix_2_VNH, ports):
         # TODO: Verify if the new logic makes sense
         changed_vnhs = []
         announcements = []
@@ -241,6 +189,7 @@ class BGPPeer():
             best_route = self.rib["local"][prefix]
             #best_route["next_hop"] = str(prefix_2_VNH[prefix])
 
+            print "## DEBUG: best route: ", best_route
 
             if ('announce' in update):
                 # Check if best path has changed for this prefix
@@ -252,12 +201,10 @@ class BGPPeer():
                     # add the VNH to the list of changed VNHs
                     changed_vnhs.append(prefix_2_VNH[prefix])
 
-                    if best_route is None:
-                        print idp, prefix, "not found in rib! Prev route:", prev_route
-
                     # announce the route to each router of the participant
                     for port in ports:
                         # TODO: Create a sender queue and import the announce_route function
+
                         announcements.append(announce_route(port["IP"], prefix,
                                             prefix_2_VNH[prefix], best_route["as_path"]))
 
